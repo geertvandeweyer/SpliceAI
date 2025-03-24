@@ -136,7 +136,10 @@ def _process_server(clientsocket,device,queue):
             item = 'Hold On'
         
         # set reply
-        clientsocket.sendall(str.encode(str(item)))
+        try:
+            clientsocket.sendall(str.encode(str(item)))
+        except BrokenPipeError as e:
+            raise Exception(f"Error in server thread {device}: {repr(e)}")
 
     logger.debug(f"Closing {device} socket.")
     clientsocket.close()
