@@ -210,7 +210,7 @@ def initialize_devices(args):
 
     logger.info("Using the following devices for prediction:")
     for d in prediction_devices:
-        logger.info(f"  - {d.name}")
+        logger.info(f"  - {d}")
 
     return prediction_devices, mem_per_logical
 

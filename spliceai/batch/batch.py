@@ -21,7 +21,9 @@ sys.path.append('../../../spliceai')
 from spliceai.batch.batch_utils import   get_preds, initialize_devices, initialize_one_device
 from spliceai.utils import Annotator, get_delta_scores
 
-
+class TensorFlowError(Exception):
+    """Custom exception for TensorFlow  errors."""
+    pass
 
 SequenceType_REF = 0
 SequenceType_ALT = 1
@@ -55,6 +57,16 @@ def get_options():
 
     return args
 
+# set a trap so that on any unexpected error, the worker will send an error message back to the server.
+def handle_exception(socket, exc_type, exc_value, exc_traceback):
+    logger = logging.getLogger(__name__)
+    logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    socket.send(str.encode(f"Error : {exc_value}"))
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+    sys.exit(1)
+
+def setup_exception_hook(socket):
+    sys.excepthook = lambda *exc_info: handle_exception(socket, *exc_info)
 
 def main():
     # get arguments
@@ -70,38 +82,62 @@ def main():
     )
     logger = logging.getLogger(__name__)
     
-    # initialize && assign device
-    if args.simulated_gpus > 0:
-        devices = [x for x in initialize_devices(args)[0] if x.name == args.device]
-    else:
-        # no simulation : expose only the requested device to tensor.
-        devices = initialize_one_device(args)
+    # setup the socket
+    try:
+        s = socket.socket()
+        host = socket.gethostname()  # locahost
+        port = args.port
+        s.connect((host, port))
+    except Exception as e:
+        raise(e)
+    
+    # setup the exception hook
+    setup_exception_hook(s)
+
+    try:
+        # initialize && assign device
+        if args.simulated_gpus > 0:
+            devices = [x for x in initialize_devices(args)[0] if x.name == args.device]
+        else:
+            # no simulation : expose only the requested device to tensor.
+            devices = initialize_one_device(args)
+    except Exception as e:
+        raise e
 
 
     if not devices:
-        logger.error(f"Specified device '{args.device}' not found!")
-        sys.exit(1)
-    device = devices[0].name
-    with tf.device(device):
-        logger.info(f"Working on device {args.device}")
-        # initialize the VCFPredictionBatch, pass (non-masked) device name
-        worker = VCFPredictionBatch(args=args,logger=logger) 
-        # start working !
-        worker.process_batches()
+        # raise with message
+        raise ValueError(f"Specified device '{args.device}' not found!")
+        
+    try:
+        device = devices[0].name
+        with tf.device(device):
+            logger.info(f"Working on device {args.device}")
+            # initialize the VCFPredictionBatch, pass (non-masked) device name
+            worker = VCFPredictionBatch(args=args,logger=logger,socket=s) 
+            # start working !
+            worker.process_batches()
+    except tf.errors.ResourceExhaustedError as e:
+        raise TensorFlowError("Caught TensorFlow OOM Error!")
+    except Exception as e:
+        raise e
     # done.
-
+    s.close()
+    logger.info("Worker done. Shutting down")
+    sys.exit(0)
 
 
 
 # Class to handle predictions
 class VCFPredictionBatch:
-    def __init__(self, args, logger): 
+    def __init__(self, args, logger, socket): 
         self.args = args
         self.ann = None
         self.tensorflow_batch_size = args.tensorflow_batch_size
         self.tmpdir = args.tmpdir
         self.device = args.device
         self.logger = logger
+        self.socket = socket
 
         # store batches of predictions using 'tensor_size|batch_idx' as key. 
         self.shelf_preds_name = f"spliceai_preds.{self.device[1:].replace(':','_')}.shelf"
@@ -109,57 +145,55 @@ class VCFPredictionBatch:
         
     # monitor the queue and submit incoming batches.
     def process_batches(self):
-        with socket.socket() as s:
-            host = socket.gethostname()  # locahost
-            port = self.args.port
-            try:
-                s.connect((host,port))
-            except Exception as e:
-                raise(e)
-            # first response : server is running
-            res = s.recv(2048)
-            # then start polling queue
-            msg = "Ready for work..."
-
-            # first load annotation
-            if not self.ann:
-                # load annotation 
-                self.ann = Annotator(self.args.reference, self.args.annotation,cpu=True)
-            while True:
-                # send request for work
-                s.send(str.encode(msg))
-                res = s.recv(2048).decode('utf-8')
-                # response can be a job, 'hold on' for empty queue, or 'Done' for all finished.
-                if res == 'Hold On':
-                    msg = 'Ready for work...'
-                    time.sleep(0.1)
-                elif res == 'Finished':
-                    self.logger.info("Worker done. Shutting down")
-                    break
-                else:
-                    # got a batch id:
-                     with open(os.path.join(self.tmpdir,res),'rb') as p:
-                         data = pickle.load(p)
-                     # remove pickled batch
-                     os.unlink(os.path.join(self.tmpdir,res))
-                     # process : stats are send back as next 'ready for work' result.
-                     try:
-                        msg = self._process_batch(data['tensor_size'],data['batch_ix'], data['data'],data['length'])
-                     except Exception as e:
-                        self.logger.error(f"Error processing batch {data['tensor_size']}|{data['batch_ix']}: {repr(e)}")
-                        # send error message back to server
-                        msg = "Error : {}".format(repr(e))
-
-            # send signal to server thread to exit.
-            s.send(str.encode('Done'))
-            self.logger.info(f"Closing Worker on device {self.device}")
+        
+        #host = socket.gethostname()  # locahost
+        #port = self.args.port
+        #try:
+        #    s.connect((host,port))
+        #except Exception as e:
+        #    raise(e)
+        # first response : server is running
+        res = self.socket.recv(2048)
+        # then start polling queue
+        msg = "Ready for work..."
+        # first load annotation
+        if not self.ann:
+            # load annotation 
+            self.ann = Annotator(self.args.reference, self.args.annotation,cpu=True)
+        while True:
+            # send request for work
+            self.socket.send(str.encode(msg))
+            res = self.socket.recv(2048).decode('utf-8')
+            # response can be a job, 'hold on' for empty queue, or 'Done' for all finished.
+            if res == 'Hold On':
+                msg = 'Ready for work...'
+                time.sleep(0.1)
+            elif res == 'Finished':
+                self.logger.info("Worker done. Shutting down")
+                break
+            else:
+                # got a batch id:
+                with open(os.path.join(self.tmpdir,res),'rb') as p:
+                    data = pickle.load(p)
+                # remove pickled batch
+                os.unlink(os.path.join(self.tmpdir,res))
+                # process : stats are send back as next 'ready for work' result.
+                try:
+                   msg = self._process_batch(data['tensor_size'],data['batch_ix'], data['data'],data['length'])
+                except Exception as e:
+                   raise Exception(f"Error processing batch {data['tensor_size']}|{data['batch_ix']}: {repr(e)}")
+                   # send error message back to server
+                   #msg = "Error : {}".format(repr(e))
+        # send signal to server thread to exit.
+        self.socket.send(str.encode('Done'))
+        self.logger.info(f"Closing Worker on device {self.device}")
 
 
-    def _process_batch(self,tensor_size,batch_ix, prediction_batch,nr_preds):
+    def _process_batch(self, tensor_size, batch_ix, prediction_batch, nr_preds):
         start = time.time()
         
         # Sanity check dump of batch sizes
-        self.logger.debug('Tensor size : {} : batch_ix {} : nr.entries : {}'.format(tensor_size, batch_ix , nr_preds))
+        self.logger.debug('Tensor size : {} : batch_ix {} : nr.entries : {}'.format(tensor_size, batch_ix, nr_preds))
 
         # Run predictions && add to shelf.
         self.shelf_preds["{}|{}".format(tensor_size,batch_ix)] = np.mean(

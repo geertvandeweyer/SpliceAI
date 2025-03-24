@@ -13,6 +13,7 @@ import shutil
 import tensorflow as tf
 import subprocess as sp
 import os
+import socket
 
 from spliceai.batch.batch_utils import prepare_batches,  start_workers,initialize_devices
 from spliceai.utils import Annotator, get_delta_scores
@@ -29,8 +30,8 @@ except ImportError:
 def get_options():
 
     parser = argparse.ArgumentParser(description='Version: 1.3.1')
-    parser.add_argument('-P', '--port', metavar='port', type=int, default=54677,
-                        help='option to change port if several GPUs on one network (default: 54677)')
+    parser.add_argument('-P', '--port', metavar='port', type=int, default=None,
+                        help='specify a port for socket/socketserver communication')
     parser.add_argument('-I', '--input_data', metavar='input', nargs='?', default=std_in,
                         help='path to the input VCF file, defaults to standard in')
     parser.add_argument('-O', '--output_data', metavar='output', nargs='?', default=std_out,
@@ -83,20 +84,42 @@ def main():
         logging.error('Usage: spliceai [-h] [-I [input]] [-O [output]] -R reference -A annotation '
                       '[-D [distance]] [-M [mask]] [-B [prediction_batch_size]] [-T [tensorflow_batch_size]] [-t [tmp_location]]')
         exit()
-    logging.debug(f"PORT:{args.port}")
+    # select a free socket
+    if args.port is None:
+        try:
+            sock = socket.socket()
+            sock.bind(('', 0))
+            args.port = sock.getsockname()[1]
+            logging.debug(f"PORT:{args.port}")
+        except Exception as e:
+            logging.error(f"Error: {repr(e)}")
+            sys.exit(1)
 
     ## revised code for batched analysis
     if args.prediction_batch_size > 1:
         # initialize the GPU and setup to estimate
-        devices,mem_per_logical = initialize_devices(args)
+        try:
+            devices,mem_per_logical = initialize_devices(args)
+        except Exception as e:
+            logging.error(f"Error initializing devices: {repr(e)}")
+            sys.exit(1)
+
         # Default the tensorflow batch size to the prediction_batch_size if it's not supplied in the args
         args.tensorflow_batch_size = args.tensorflow_batch_size if args.tensorflow_batch_size else args.prediction_batch_size
         
         # load annotation data:
-        ann = Annotator(args.reference, args.annotation)
-        logging.debug("Annotation loaded.")
+        try:
+            ann = Annotator(args.reference, args.annotation)
+            logging.debug("Annotation loaded.")
+        except Exception as e:
+            logging.error(f"Error loading annotation: {repr(e)}")
+            sys.exit(1)
         # run         
-        run_spliceai_batched(args,ann,devices,mem_per_logical)
+        try:
+            run_spliceai_batched(args,ann,devices,mem_per_logical)
+        except Exception as e:
+            logging.error(f"Error running SpliceAI: {repr(e)}")
+            sys.exit(1)
 
     else: # run original code:
         # load annotation
