@@ -150,7 +150,7 @@ def get_preds(ann, x, batch_size=32):
         predictions = [ann.models[m].predict(x, batch_size=batch_size, verbose=0) for m in range(5)]  
     except Exception as e:
         # try a smaller batch (less efficient, but lower on memory). if it crashes again : it raises.
-        logger.warning("TF.predict failed ({}).Retrying with smaller batch size".format(e))
+        logger.warning("TF.predict failed ({}). Retrying with smaller batch size".format(e))
         predictions = [ann.models[m].predict(x, batch_size=4, verbose=0) for m in range(5)]
     # garbage collection to prevent memory overflow... 
     gc.collect()
