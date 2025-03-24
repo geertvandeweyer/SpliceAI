@@ -85,8 +85,9 @@ def main():
     # setup the socket
     try:
         s = socket.socket()
-        host = socket.gethostname()  # locahost
+        host = socket.gethostname()  # localhost
         port = args.port
+        logger.info(f"Connecting to server {host}:{port}")
         s.connect((host, port))
     except Exception as e:
         raise(e)

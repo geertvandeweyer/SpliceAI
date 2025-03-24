@@ -69,9 +69,9 @@ def start_workers(prediction_queue, tmpdir, args,devices,mem_per_logical):
     # select a free socket
     if args.port is None:
         try:
-            sock = socket.socket()
-            sock.bind(('', 0))
-            args.port = sock.getsockname()[1]
+            #sock = socket.socket()
+            s.bind(('', 0))
+            args.port = s.getsockname()[1]
             logging.debug(f"PORT:{args.port}")
         except Exception as e:
             logging.error(f"Error: {repr(e)}")
@@ -80,9 +80,11 @@ def start_workers(prediction_queue, tmpdir, args,devices,mem_per_logical):
         logger.info(f"Starting server: {host}:{port}")
         try:
            s.bind((host,port))
+           
         except Exception as e:
             logger.error(f"Cannot bind to port {port} : {e}")
             sys.exit(1)
+    logging.info("Server started as : {} : {}".format(host,port))
     s.listen(5)
     # start client sockets & server threads.
     clientThreads = list()
