@@ -84,16 +84,7 @@ def main():
         logging.error('Usage: spliceai [-h] [-I [input]] [-O [output]] -R reference -A annotation '
                       '[-D [distance]] [-M [mask]] [-B [prediction_batch_size]] [-T [tensorflow_batch_size]] [-t [tmp_location]]')
         exit()
-    # select a free socket
-    if args.port is None:
-        try:
-            sock = socket.socket()
-            sock.bind(('', 0))
-            args.port = sock.getsockname()[1]
-            logging.debug(f"PORT:{args.port}")
-        except Exception as e:
-            logging.error(f"Error: {repr(e)}")
-            sys.exit(1)
+    
 
     ## revised code for batched analysis
     if args.prediction_batch_size > 1:
